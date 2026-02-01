@@ -189,7 +189,7 @@ delegate_menu() {
             echo -e "Balance hiện tại: ${BLUE}$bal RAI${NC}"
             read -p "Nhập số lượng RAI muốn delegate: " amt_rai
             amt_arai=$(printf "%.0f" $(echo "$amt_rai * 1000000000000000000" | bc -l))
-            republicd tx staking delegate "$val_addr" "${amt_arai}arai" --from "$kname" --chain-id "$CHAIN_ID" --gas "$GAS_LIMIT" --fee "$FEES" --keyring-backend "$KEYRING_BACKEND" --home "$REPUBLIC_HOME" -y
+            republicd tx staking delegate "$val_addr" "${amt_arai}arai" --from "$kname" --chain-id "$CHAIN_ID" --gas "$GAS_LIMIT" --fees "$FEES" --keyring-backend "$KEYRING_BACKEND" --home "$REPUBLIC_HOME" -y
             ;;
         2)
             printf "%-15s | %-45s | %-10s\n" "Key Name" "Address" "Balance (RAI)"
