@@ -30,3 +30,12 @@ Chúc năng 2 để tối ưu node (nếu cần)
 Sử dụng chức năng 6 để kiểm tra xem node đã sync chưa
 Sau khi node sync, hãy tạo ví (key name là `wallet`) để faucet (hoặc vào kênh discord xin mod - hên xui)
 Có balance rồi thì tạo validator (chú ý amount và min-self-delegate)
+
+## Cron Unjail
+```
+crontab -e
+```
+Thêm dòng sau vào cuối
+```
+*/10 * * * * /bin/bash /root/republicai-utils/cron_unjail.sh >> /root/republicai-utils/unjail_log.txt 2>&1
+```
