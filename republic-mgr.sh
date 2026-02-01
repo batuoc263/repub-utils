@@ -238,6 +238,55 @@ optimize_node() {
     echo -e "${GREEN}Optimization applied! Node restarted.${NC}"
 }
 
+export_node_info() {
+    msg "Đang trích xuất thông tin Node..."
+    
+    # Lấy Node ID
+    NODE_ID=$(republicd comet show-node-id --home "$REPUBLIC_HOME")
+    
+    # Tự động lấy IP Public (dùng dịch vụ ifconfig.me)
+    PUBLIC_IP=$(curl -s ifconfig.me)
+    
+    # Lấy port P2P (mặc định là 26656 từ config.toml, nếu bạn đổi port hãy sửa ở đây)
+    P2P_PORT=$(sed -n 's/^laddr = "tcp:\/\/0.0.0.0:\([0-9]*\)".*/\1/p' "$REPUBLIC_HOME/config/config.toml" | head -n 1)
+    P2P_PORT=${P2P_PORT:-26656} # Default nếu không tìm thấy
+
+    if [ -z "$NODE_ID" ]; then
+        err "Không tìm thấy Node ID. Hãy chắc chắn node đã được cài đặt."
+    else
+        echo -e "\n${BLUE}--- THÔNG TIN PEER CỦA BẠN ---${NC}"
+        echo -e "${GREEN}${NODE_ID}@${PUBLIC_IP}:${P2P_PORT}${NC}"
+        echo -e "------------------------------"
+        echo -e "Hãy copy dòng trên để nhập vào node mới.\n"
+    fi
+}
+
+import_peers() {
+    read -p "Dán chuỗi Peer (id@ip:port): " NEW_PEERS
+    
+    if [ -z "$NEW_PEERS" ]; then
+        err "Chuỗi Peer không được để trống!"
+        return 1
+    fi
+
+    msg "Đang dừng dịch vụ republicd..."
+    sudo systemctl stop republicd
+
+    msg "Đang cập nhật persistent_peers vào config.toml..."
+    # Backup config trước khi sửa
+    cp "$REPUBLIC_HOME/config/config.toml" "$REPUBLIC_HOME/config/config.toml.bak"
+    
+    # Dùng sed để tìm và thay thế dòng persistent_peers
+    # Lưu ý: Lệnh này thay thế toàn bộ danh sách cũ bằng danh sách mới bạn nhập vào
+    sed -i "s/^persistent_peers *=.*/persistent_peers = \"$NEW_PEERS\"/" "$REPUBLIC_HOME/config/config.toml"
+
+    msg "Đang khởi động lại dịch vụ..."
+    sudo systemctl start republicd
+    
+    msg "Hoàn tất! Kiểm tra log để xem node có kết nối được không."
+    sudo journalctl -u republicd -f -o cat --since "1 min ago"
+}
+
 cleanup() {
     warn "CẢNH BÁO: Hành động này sẽ dừng node và XÓA TOÀN BỘ DỮ LIỆU!"
     read -p "Xác nhận xóa? (type 'DELETE'): " confirm
@@ -261,18 +310,21 @@ while true; do
     echo "5. Delegate (Self/Auto)"
     echo "6. Kiểm tra Sync Status"
     echo "7. Xem Logs (Systemd)"
-    echo "8. Cleanup (Xóa Node)"
+    echo "8. Export Peer Info (Lấy info node này)"
+    echo "9. Import Peers (Dán info node khác vào)"
     echo "0. Thoát"
     read -p "Chọn option: " main_opt
 
     case $main_opt in
         1) install_node ;;
-        2) republicd status 2>&1 | jq '.SyncInfo // .sync_info' ;;
+        2) optimize_node;;
         3) manage_wallet ;;
         4) create_validator_json;;
         5) delegate_menu ;;
         6) sudo journalctl -u republicd -f -o cat ;;
-        7) cleanup ;;
+        7) republicd status 2>&1 | jq '.SyncInfo // .sync_info' ;;
+        8) export_node_info ;;
+        9) import_peers ;;
         0) exit 0 ;;
     esac
 done
