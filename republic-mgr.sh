@@ -11,6 +11,8 @@ PEERS="e281dc6e4ebf5e32fb7e6c4a111c06f02a1d4d62@3.92.139.74:26656,cfb2cb90a241f7
 KEYRING_BACKEND="test"
 DENOM="arai"
 GAS_PRICE="250000000arai"
+GAS_LIMIT="300000"
+FEES="250000000000000000arai"
 
 # --- Màu sắc ---
 GREEN='\033[0;32m'
@@ -185,8 +187,9 @@ delegate_menu() {
             val_addr=$(republicd keys show "$kname" --bech val -a --keyring-backend "$KEYRING_BACKEND" --home "$REPUBLIC_HOME")
             bal=$(get_balance "$addr")
             echo -e "Balance hiện tại: ${BLUE}$bal RAI${NC}"
-            read -p "Nhập số lượng RAI muốn delegate: " amt
-            republicd tx staking delegate "$val_addr" "${amt}000000000000000000arai" --from "$kname" --chain-id "$CHAIN_ID" --gas auto --gas-adjustment 1.5 --gas-prices "$GAS_PRICE" --keyring-backend "$KEYRING_BACKEND" --home "$REPUBLIC_HOME" -y
+            read -p "Nhập số lượng RAI muốn delegate: " amt_rai
+            amt_arai=$(printf "%.0f" $(echo "$amt_rai * 1000000000000000000" | bc -l))
+            republicd tx staking delegate "$val_addr" "${amt_arai}arai" --from "$kname" --chain-id "$CHAIN_ID" --gas "$GAS_LIMIT" --fee "$FEES" --keyring-backend "$KEYRING_BACKEND" --home "$REPUBLIC_HOME" -y
             ;;
         2)
             printf "%-15s | %-45s | %-10s\n" "Key Name" "Address" "Balance (RAI)"
