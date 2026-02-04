@@ -294,6 +294,45 @@ import_peers() {
     sudo journalctl -u republicd -f -o cat --since "1 min ago"
 }
 
+update_node() {
+    msg "Bắt đầu quy trình cập nhật Republic Binary..."
+    
+    # 1. Yêu cầu nhập URL hoặc phiên bản
+    read -p "Nhập URL tải Binary mới (hoặc để trống để dùng v0.2.0): " UPDATE_URL
+    UPDATE_URL=${UPDATE_URL:-"https://github.com/RepublicAI/networks/releases/download/v0.2.0/republicd-linux-amd64"}
+    
+    # 2. Dừng dịch vụ
+    msg "Đang dừng dịch vụ republicd..."
+    sudo systemctl stop republicd
+    
+    # 3. Tải và thay thế binary
+    msg "Đang tải binary từ: $UPDATE_URL"
+    curl -L "$UPDATE_URL" -o /tmp/republicd_new
+    
+    if [ $? -ne 0 ]; then
+        err "Tải file thất bại! Vui lòng kiểm tra lại URL."
+        sudo systemctl start republicd
+        return 1
+    fi
+    
+    chmod +x /tmp/republicd_new
+    
+    # Backup binary cũ cho chắc chắn
+    mv "$BINARY_PATH" "${BINARY_PATH}_bak_$(date +%Y%m%d)"
+    sudo mv /tmp/republicd_new "$BINARY_PATH"
+    
+    # 4. Khởi động lại và kiểm tra
+    msg "Đang khởi động lại dịch vụ..."
+    sudo systemctl daemon-reload
+    sudo systemctl start republicd
+    
+    NEW_VER=$($BINARY_PATH version)
+    msg "Cập nhật hoàn tất! Phiên bản hiện tại: ${BLUE}$NEW_VER${NC}"
+    
+    # Gợi ý kiểm tra log
+    warn "Hãy kiểm tra log (Option 7) để đảm bảo node không bị panic sau khi update."
+}
+
 cleanup() {
     warn "CẢNH BÁO: Hành động này sẽ dừng node và XÓA TOÀN BỘ DỮ LIỆU!"
     read -p "Xác nhận xóa? (type 'DELETE'): " confirm
@@ -319,6 +358,7 @@ while true; do
     echo "7. Xem Logs (Systemd)"
     echo "8. Export Peer Info (Lấy info node này)"
     echo "9. Import Peers (Dán info node khác vào)"
+    echo "10. Cập nhật Node (Update Binary)"
     echo "0. Thoát"
     read -p "Chọn option: " main_opt
 
@@ -332,6 +372,7 @@ while true; do
         7) sudo journalctl -u republicd -f -o cat ;;
         8) export_node_info ;;
         9) import_peers ;;
+        10) update_node ;;
         0) exit 0 ;;
     esac
 done
