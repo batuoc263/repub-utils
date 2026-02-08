@@ -64,7 +64,7 @@ deploy_node() {
 
 wallet_mgr() {
     read -p "Nhập ID node để quản lý ví: " id
-    echo -e "1. Tạo ví mới\n2. Khôi phục ví\n3. Xem danh sách ví\n4. Kiểm tra số dư (Balance)"
+    echo -e "1. Tạo ví mới\n2. Khôi phục ví\n3. Xem danh sách ví\n4. Kiểm tra số dư (Balance)\n5. Import ví từ file (Batch Clone)\n6. Gửi token (Send Token)"
     read -p "Chọn: " wopt
     case $wopt in
         1) read -p "Tên ví: " kname; d_exec "$id" keys add "$kname" --keyring-backend test ;;
@@ -74,7 +74,116 @@ wallet_mgr() {
             read -p "Tên ví hoặc địa chỉ: " wallet_addr
             d_exec "$id" query bank balances "$wallet_addr"
             ;;
+        5) batch_import_wallets "$id" ;;
+        6) send_token "$id" ;;
     esac
+}
+
+batch_import_wallets() {
+    local id=$1
+    
+    # Kiểm tra file wallets.txt
+    if [[ ! -f "wallets.txt" ]]; then
+        err "File wallets.txt không tìm thấy!"
+        return 1
+    fi
+    
+    # Đếm số lượng ví trong file
+    total_wallets=$(wc -l < wallets.txt)
+    msg "Tổng số ví trong file: $total_wallets"
+    
+    # Hỏi nhân dân
+    read -p "Nhập thứ tự ví bắt đầu (1-$total_wallets): " start_idx
+    read -p "Nhập số lượng ví muốn import: " count
+    
+    # Validate input
+    if [[ ! "$start_idx" =~ ^[0-9]+$ ]] || [[ ! "$count" =~ ^[0-9]+$ ]]; then
+        err "Vui lòng nhập số nguyên!"
+        return 1
+    fi
+    
+    if [[ $start_idx -lt 1 || $start_idx -gt $total_wallets ]]; then
+        err "Thứ tự ví không hợp lệ!"
+        return 1
+    fi
+    
+    if [[ $((start_idx + count - 1)) -gt $total_wallets ]]; then
+        err "Không đủ ví trong file! Chỉ có $total_wallets ví."
+        return 1
+    fi
+    
+    msg "Bắt đầu import $count ví từ thứ tự $start_idx..."
+    
+    # Import ví
+    local end_idx=$((start_idx + count - 1))
+    local wallet_counter=1
+    
+    for ((line_num=$start_idx; line_num<=end_idx; line_num++)); do
+        mnemonic=$(sed -n "${line_num}p" wallets.txt)
+        wallet_name="dele_${wallet_counter}"
+        
+        echo -ne "${YELLOW}[${wallet_counter}/${count}] Importing $wallet_name từ dòng $line_num...${NC}\r"
+        
+        # Khôi phục ví (keyring-backend test không cần password)
+        echo "$mnemonic" | sudo docker exec -i "republicd_node$id" republicd keys add "$wallet_name" --recover --keyring-backend test >/dev/null 2>&1
+        
+        if [[ $? -eq 0 ]]; then
+            echo -e "${GREEN}✓ Ví $wallet_counter ($wallet_name) import thành công!${NC}"
+        else
+            echo -e "${RED}✗ Ví $wallet_counter ($wallet_name) import thất bại!${NC}"
+        fi
+        
+        ((wallet_counter++))
+    done
+    
+    msg "Hoàn tất import $count ví!"
+    echo -e "${YELLOW}Danh sách ví mới:${NC}"
+    d_exec "$id" keys list --keyring-backend test
+}
+
+send_token() {
+    local id=$1
+    
+    # Hỏi thông tin
+    read -p "Tên ví nguồn (hoặc địa chỉ): " from_addr
+    read -p "Tên ví đích (hoặc địa chỉ): " to_addr
+    read -p "Số lượng RAI muốn gửi: " amount_rai
+    
+    # Validate input
+    if [[ -z "$from_addr" || -z "$to_addr" || -z "$amount_rai" ]]; then
+        err "Vui lòng nhập đầy đủ thông tin!"
+        return 1
+    fi
+    
+    # Kiểm tra amount có phải số
+    if ! [[ "$amount_rai" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+        err "Số lượng phải là số hợp lệ!"
+        return 1
+    fi
+    
+    # Tính toán arai (RAI * 10^18)
+    amount_arai=$(printf "%.0f" $(echo "$amount_rai * 1000000000000000000" | bc -l))
+    
+    msg "Chuẩn bị gửi $amount_rai RAI (${amount_arai}arai)"
+    echo -e "${YELLOW}Từ: $from_addr${NC}"
+    echo -e "${YELLOW}Đến: $to_addr${NC}"
+    read -p "Xác nhận gửi? (y/n): " confirm
+    
+    if [[ "$confirm" != "y" ]]; then
+        warn "Đã hủy giao dịch."
+        return 0
+    fi
+    
+    msg "Đang gửi giao dịch..."
+    d_exec "$id" tx bank send "$from_addr" "$to_addr" "${amount_arai}arai" \
+        --from "$from_addr" \
+        --chain-id "$CHAIN_ID" \
+        --gas-prices="2500000000arai" \
+        --gas-adjustment=1.5 \
+        --gas=auto \
+        -y
+    
+    echo -e "${GREEN}Giao dịch đã được gửi!${NC}"
 }
 
 validator_mgr() {
@@ -113,6 +222,8 @@ EOF"
         --gas-prices="2500000000arai" \
         --gas-adjustment=1.5 \
         --gas=auto \
+        --home $CONTAINER_HOME \
+        --keyring-backend test \
         -y
 }
 
