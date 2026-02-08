@@ -64,12 +64,16 @@ deploy_node() {
 
 wallet_mgr() {
     read -p "Nhập ID node để quản lý ví: " id
-    echo -e "1. Tạo ví mới\n2. Khôi phục ví\n3. Xem danh sách ví"
+    echo -e "1. Tạo ví mới\n2. Khôi phục ví\n3. Xem danh sách ví\n4. Kiểm tra số dư (Balance)"
     read -p "Chọn: " wopt
     case $wopt in
         1) read -p "Tên ví: " kname; d_exec "$id" keys add "$kname" --keyring-backend test ;;
         2) read -p "Tên ví: " kname; d_exec "$id" keys add "$kname" --recover --keyring-backend test ;;
         3) d_exec "$id" keys list --keyring-backend test ;;
+        4) 
+            read -p "Tên ví hoặc địa chỉ: " wallet_addr
+            d_exec "$id" query bank balances "$wallet_addr"
+            ;;
     esac
 }
 
