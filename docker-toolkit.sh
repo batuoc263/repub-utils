@@ -64,11 +64,11 @@ deploy_node() {
 
 wallet_mgr() {
     read -p "Nhập ID node để quản lý ví: " id
-    echo -e "1. Tạo ví mới\n2. Khôi phục ví\n3. Xem danh sách ví\n4. Kiểm tra số dư (Balance)\n5. Import ví từ file (Batch Clone)\n6. Gửi token (Send Token)"
+    echo -e "1. Tạo ví mới (wallet)\n2. Khôi phục ví (wallet)\n3. Xem danh sách ví\n4. Kiểm tra số dư (Balance)\n5. Import ví từ file (Batch Clone)\n6. Gửi token (Send Token)"
     read -p "Chọn: " wopt
     case $wopt in
-        1) read -p "Tên ví: " kname; d_exec "$id" keys add "$kname" --keyring-backend test ;;
-        2) read -p "Tên ví: " kname; d_exec "$id" keys add "$kname" --recover --keyring-backend test ;;
+        1) d_exec "$id" keys add "wallet" --keyring-backend test ;;
+        2) d_exec "$id" keys add "wallet" --recover --keyring-backend test ;;
         3) d_exec "$id" keys list --keyring-backend test ;;
         4) 
             read -p "Tên ví hoặc địa chỉ: " wallet_addr
@@ -188,7 +188,6 @@ send_token() {
 
 validator_mgr() {
     read -p "Nhập ID node để tạo Validator: " id
-    read -p "Tên ví (đã tạo ở bước trên): " kname
     read -p "Số lượng RAI stake (vd: 0.5): " amount_rai
     
     # Lấy Pubkey từ bên trong container
@@ -217,7 +216,7 @@ EOF"
 
     msg "Đang gửi giao dịch tạo Validator cho Node $id..."
     d_exec "$id" tx staking create-validator $CONTAINER_HOME/validator.json \
-        --from "$kname" \
+        --from "wallet" \
         --chain-id "$CHAIN_ID" \
         --gas-prices="2500000000arai" \
         --gas-adjustment=1.5 \
@@ -225,6 +224,39 @@ EOF"
         --home $CONTAINER_HOME \
         --keyring-backend test \
         -y
+}
+
+list_all_addresses() {
+    # Get all running republicd_node containers, sorted by node_id (version sort)
+    containers=$(sudo docker ps --filter "name=republicd_node" --format "{{.Names}}" | sort -V)
+    
+    if [[ -z "$containers" ]]; then
+        err "Không tìm thấy node nào đang chạy!"
+        return 1
+    fi
+    
+    msg "Đang lấy dữ liệu từ các container..."
+    
+    echo -e "\n${GREEN}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}       TẤT CẢ ĐỊA CHỈ VÍ & VALIDATOR (SẮP XẾP THEO NODE_ID)${NC}"
+    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}\n"
+    
+    for container in $containers; do
+        # Extract node_id from container name (e.g., republicd_node1 -> 1)
+        node_id=${container##republicd_node}
+        
+        
+        # Get validator info if exists
+        validator_address=$(sudo docker exec "$container" republicd keys show wallet --bech val -a --keyring-backend test --home $CONTAINER_HOME 2>/dev/null)
+        
+        if [[ -n "$validator_address" && "$validator_address" != "null" ]]; then
+            printf "${GREEN}  • %-20s${NC} %s\n" "validator" "$validator_address"
+        fi
+        
+        echo ""
+    done
+    
+    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}\n"
 }
 
 # --- Menu chính ---
@@ -235,6 +267,7 @@ while true; do
     echo "3. Tạo Validator (JSON mode)"
     echo "4. Kiểm tra Sync Status"
     echo "5. Xem Logs"
+    echo "6. Xuất tất cả địa chỉ"
     echo "0. Thoát"
     read -p "Chọn option: " opt
     case $opt in
@@ -243,6 +276,7 @@ while true; do
         3) validator_mgr ;;
         4) read -p "ID node: " id; d_exec "$id" status | jq .sync_info ;;
         5) read -p "ID node: " id; sudo docker logs -f "republicd_node$id" ;;
+        6) list_all_addresses ;;
         0) exit 0 ;;
     esac
 done
