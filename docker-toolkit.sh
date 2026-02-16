@@ -302,13 +302,28 @@ upgrade_binary_single() {
     # make executable on host so docker cp preserves exec bit when possible
     chmod +x "$tmpfile" 2>/dev/null || true
 
+    # Ensure container is running so we can exec into it; if it was stopped, start temporarily
+    was_running=$(sudo docker inspect -f '{{.State.Running}}' "republicd_node$id" 2>/dev/null || echo "false")
+    started_here=false
+    if [[ "$was_running" != "true" ]]; then
+        msg "Container republicd_node$id không chạy — sẽ start tạm thời để cập nhật"
+        if ! sudo docker start "republicd_node$id" >/dev/null 2>&1; then
+            err "Không thể start container republicd_node$id"
+            rm -f "$tmpfile"
+            return 1
+        fi
+        started_here=true
+        sleep 2
+    fi
+
     msg "Sao lưu binary hiện tại (nếu có) trong container..."
-    sudo docker exec "republicd_node$id" bash -c 'if [ -f /usr/local/bin/republicd ]; then cp /usr/local/bin/republicd /usr/local/bin/republicd.bak.$(date +%s) || true; fi'
+    sudo docker exec "republicd_node$id" bash -c 'if [ -f /usr/local/bin/republicd ]; then cp /usr/local/bin/republicd /usr/local/bin/republicd.bak.$(date +%s) || true; fi' 2>/dev/null || warn "Không thể sao lưu (file có thể không tồn tại)"
 
     msg "Đưa binary mới vào container republicd_node$id..."
     if ! sudo docker cp "$tmpfile" "republicd_node$id":/usr/local/bin/republicd; then
         err "Không thể copy binary vào container republicd_node$id"
         rm -f "$tmpfile"
+        if [[ "$started_here" == "true" ]]; then sudo docker stop "republicd_node$id" >/dev/null 2>&1; fi
         return 1
     fi
 
@@ -317,9 +332,7 @@ upgrade_binary_single() {
         msg "Đã set executable bên trong container"
     else
         warn "chmod bên trong container thất bại, thử phương pháp tar fallback..."
-        # send a tar stream which will set the mode from host file
         (cd "$(dirname "$tmpfile")" && tar -cf - "$(basename "$tmpfile")") | sudo docker exec -i "republicd_node$id" tar -C /usr/local/bin -xpf - --no-same-owner 2>/dev/null || true
-        # ensure target filename
         sudo docker exec "republicd_node$id" bash -c 'if [ -f /usr/local/bin/$(basename "$tmpfile") ]; then mv /usr/local/bin/$(basename "$tmpfile") /usr/local/bin/republicd 2>/dev/null || true; fi' 2>/dev/null || true
         sudo docker exec "republicd_node$id" chmod +x /usr/local/bin/republicd 2>/dev/null || warn "Vẫn không thể chmod, container có thể có filesystem read-only or restricted"
     fi
@@ -328,18 +341,28 @@ upgrade_binary_single() {
     if ! sudo docker exec "republicd_node$id" bash -lc 'if [ -x /usr/local/bin/republicd ]; then echo OK; else echo NO; fi' | grep -q OK; then
         err "Binary vẫn không thể thực thi trong container. Kiểm tra kiến trúc hoặc quyền. Reverting backup."
         # attempt to restore backup
-        sudo docker exec "republicd_node$id" bash -c 'if [ -f /usr/local/bin/republicd.bak.* ]; then latest=$(ls -1t /usr/local/bin/republicd.bak.* | head -n1) && cp "$latest" /usr/local/bin/republicd || true; fi' 2>/dev/null || true
+        sudo docker exec "republicd_node$id" bash -c 'if ls /usr/local/bin/republicd.bak.* >/dev/null 2>&1; then latest=$(ls -1t /usr/local/bin/republicd.bak.* | head -n1) && cp "$latest" /usr/local/bin/republicd || true; fi' 2>/dev/null || true
+        if [[ "$started_here" == "true" ]]; then sudo docker stop "republicd_node$id" >/dev/null 2>&1; fi
         rm -f "$tmpfile"
         return 1
     fi
 
-    msg "Khởi động lại container republicd_node$id để áp dụng binary mới..."
-    if ! sudo docker restart "republicd_node$id" 2>/dev/null; then
-        err "Restart container thất bại. Thử rollback..."
-        sudo docker exec "republicd_node$id" bash -c 'if [ -f /usr/local/bin/republicd.bak.* ]; then latest=$(ls -1t /usr/local/bin/republicd.bak.* | head -n1) && cp "$latest" /usr/local/bin/republicd || true; fi' 2>/dev/null || true
-        sudo docker restart "republicd_node$id" 2>/dev/null || warn "Không thể restart container sau rollback, vui lòng kiểm tra manual"
-        rm -f "$tmpfile"
-        return 1
+    # Apply state restoration: if it was running originally, restart to pick up binary
+    if [[ "$was_running" == "true" ]]; then
+        msg "Khởi động lại container republicd_node$id để áp dụng binary mới..."
+        if ! sudo docker restart "republicd_node$id" 2>/dev/null; then
+            err "Restart container thất bại. Thử rollback..."
+            sudo docker exec "republicd_node$id" bash -c 'if ls /usr/local/bin/republicd.bak.* >/dev/null 2>&1; then latest=$(ls -1t /usr/local/bin/republicd.bak.* | head -n1) && cp "$latest" /usr/local/bin/republicd || true; fi' 2>/dev/null || true
+            sudo docker restart "republicd_node$id" 2>/dev/null || warn "Không thể restart container sau rollback, vui lòng kiểm tra manual"
+            rm -f "$tmpfile"
+            return 1
+        fi
+    else
+        # was stopped originally; stop it again to restore previous state
+        if [[ "$started_here" == "true" ]]; then
+            sudo docker stop "republicd_node$id" >/dev/null 2>&1 || warn "Không thể stop container republicd_node$id sau cập nhật"
+            msg "Đã restore trạng thái container (stopped)."
+        fi
     fi
 
     rm -f "$tmpfile"
@@ -373,7 +396,20 @@ upgrade_binary_all() {
     for container in $containers; do
         node_id=${container##republicd_node}
         msg "---- Upgrading $container (node $node_id) ----"
-        sudo docker exec "$container" bash -c 'if [ -f /usr/local/bin/republicd ]; then cp /usr/local/bin/republicd /usr/local/bin/republicd.bak.$(date +%s) || true; fi'
+
+        was_running=$(sudo docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || echo "false")
+        started_here=false
+        if [[ "$was_running" != "true" ]]; then
+            msg "Container $container không chạy — sẽ start tạm thời để cập nhật"
+            if ! sudo docker start "$container" >/dev/null 2>&1; then
+                err "Không thể start $container, bỏ qua"
+                continue
+            fi
+            started_here=true
+            sleep 2
+        fi
+
+        sudo docker exec "$container" bash -c 'if [ -f /usr/local/bin/republicd ]; then cp /usr/local/bin/republicd /usr/local/bin/republicd.bak.$(date +%s) || true; fi' 2>/dev/null || warn "Không thể sao lưu cho $container"
 
         if sudo docker cp "$tmpfile" "$container":/usr/local/bin/republicd; then
             if sudo docker exec "$container" chmod +x /usr/local/bin/republicd 2>/dev/null; then
@@ -387,14 +423,21 @@ upgrade_binary_all() {
 
             if ! sudo docker exec "$container" bash -lc 'if [ -x /usr/local/bin/republicd ]; then echo OK; else echo NO; fi' | grep -q OK; then
                 err "Binary không thể thực thi trong $container, rollback"
-                sudo docker exec "$container" bash -c 'if [ -f /usr/local/bin/republicd.bak.* ]; then latest=$(ls -1t /usr/local/bin/republicd.bak.* | head -n1) && cp "$latest" /usr/local/bin/republicd || true; fi' 2>/dev/null || true
-                sudo docker restart "$container" 2>/dev/null || warn "Không thể restart $container sau rollback"
+                sudo docker exec "$container" bash -c 'if ls /usr/local/bin/republicd.bak.* >/dev/null 2>&1; then latest=$(ls -1t /usr/local/bin/republicd.bak.* | head -n1) && cp "$latest" /usr/local/bin/republicd || true; fi' 2>/dev/null || true
+                if [[ "$was_running" == "true" ]]; then sudo docker restart "$container" 2>/dev/null || warn "Không thể restart $container sau rollback"; fi
+                if [[ "$started_here" == "true" ]]; then sudo docker stop "$container" >/dev/null 2>&1 || warn "Không thể stop $container"; fi
                 continue
             fi
 
-            sudo docker restart "$container" 2>/dev/null && msg "Upgrade hoàn tất cho $container" || warn "Restart failed for $container after upgrade"
+            if [[ "$was_running" == "true" ]]; then
+                sudo docker restart "$container" 2>/dev/null && msg "Upgrade hoàn tất cho $container" || warn "Restart failed for $container after upgrade"
+            else
+                if [[ "$started_here" == "true" ]]; then sudo docker stop "$container" >/dev/null 2>&1 || warn "Không thể stop $container"; fi
+                msg "Upgrade hoàn tất cho $container (kept stopped)"
+            fi
         else
             err "Không thể copy binary vào $container"
+            if [[ "$started_here" == "true" ]]; then sudo docker stop "$container" >/dev/null 2>&1 || true; fi
         fi
     done
 
