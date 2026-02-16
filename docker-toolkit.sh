@@ -290,7 +290,7 @@ upgrade_binary_single() {
         return 1
     fi
 
-    # 1. Tải về máy host (giữ nguyên)
+    # 1. Tải về máy host
     msg "Tải binary về máy chủ tạm..."
     tmpfile="/tmp/republicd_new_$id"
     if ! curl -L -f -o "$tmpfile" "$url"; then
@@ -299,31 +299,39 @@ upgrade_binary_single() {
     fi
     chmod +x "$tmpfile"
 
-    # 2. Đảm bảo container đang tồn tại
+    # 2. Kiểm tra container
     if ! sudo docker ps -a --format '{{.Names}}' | grep -q "republicd_node$id"; then
         err "Container republicd_node$id không tồn tại!"
         rm -f "$tmpfile"
         return 1
     fi
 
-    # 3. Thực hiện copy và sửa quyền bằng quyền ROOT của container
-    msg "Đang nạp binary mới và cấp quyền thực thi..."
+    # 3. DỪNG CONTAINER để giải phóng file binary (Quan trọng nhất)
+    msg "Đang dừng container để giải phóng file (tránh Text file busy)..."
+    sudo docker stop "republicd_node$id" >/dev/null 2>&1
+
+    # 4. Thực hiện xóa file cũ và ghi đè file mới
+    # Chúng ta dùng 'rm -f' bên trong container trước khi ghi đè để phá vỡ liên kết file cũ
+    msg "Đang cập nhật binary mới..."
     
-    # Dùng cat để đẩy dữ liệu vào, tránh lỗi permission của docker cp
-    cat "$tmpfile" | sudo docker exec -i -u 0 "republicd_node$id" bash -c "cat > /usr/local/bin/republicd && chmod +x /usr/local/bin/republicd"
+    # Sử dụng phương pháp xóa trước khi ghi đè để tránh lỗi 'busy'
+    cat "$tmpfile" | sudo docker exec -i -u 0 "republicd_node$id" bash -c "rm -f /usr/local/bin/republicd && cat > /usr/local/bin/republicd && chmod +x /usr/local/bin/republicd"
 
     if [ $? -eq 0 ]; then
-        msg "Đã cập nhật binary thành công."
+        msg "Đã nạp binary thành công."
         
-        # 4. Kiểm tra phiên bản mới (Sanity check)
-        new_version=$(sudo docker exec "republicd_node$id" republicd version 2>/dev/null)
-        msg "Version hiện tại: $new_version"
-
         # 5. Khởi động lại container
-        msg "Khởi động lại node..."
-        sudo docker restart "republicd_node$id"
+        msg "Đang khởi động lại node..."
+        sudo docker start "republicd_node$id"
+        
+        # 6. Kiểm tra phiên bản
+        sleep 2
+        new_version=$(sudo docker exec "republicd_node$id" republicd version 2>/dev/null)
+        msg "Node ID $id đã cập nhật lên version: $new_version"
     else
-        err "Cập nhật thất bại! Kiểm tra quyền của container."
+        err "Cập nhật thất bại!"
+        # Cố gắng khởi động lại node cũ nếu lỗi
+        sudo docker start "republicd_node$id"
     fi
 
     rm -f "$tmpfile"
